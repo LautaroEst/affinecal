@@ -33,7 +33,6 @@ classifiers = [
 dependencies = [
     "numpy",
     "torch",
-    "fire",
 ]
 
 [project.urls]

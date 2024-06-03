@@ -47,8 +47,3 @@ def main(
     )
 
     trainer.fit(calibrator, train_logits, train_labels, val_logits, val_labels)
-
-if __name__ == "__main__":
-    from fire import Fire
-    torch.set_float32_matmul_precision("high")
-    Fire(main)

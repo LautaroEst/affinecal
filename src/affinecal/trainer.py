@@ -1,12 +1,9 @@
 
-
-
-
-
 import os
-from typing import Literal
+from typing import Literal, Union
 import torch
 from torch import nn, optim
+from tqdm import tqdm
 
 from .losses import init_loss
 
@@ -16,11 +13,11 @@ class Trainer:
     def __init__(
         self,
         accelerator: str = "cpu",
-        learning_rate: float = 0.01,
-        max_ls: int = 100,
+        learning_rate: float = 1.,
+        max_ls: int = 40,
         epochs: int = 100,
         loss: Literal["cross_entropy", "brier"] = "cross_entropy",
-        output_dir: str = "./output",
+        output_dir: Union[str, None] = None,
     ):
         self.device = torch.device(accelerator)
         self.learning_rate = learning_rate
@@ -29,10 +26,17 @@ class Trainer:
         self.loss = init_loss(loss)
         self.output_dir = output_dir
 
+
+    def init_state(self):
         self._state = {
             "global_step": 0,
             "current_epoch": 0,
             "state_dict": None,
+            "kwargs": {
+                "num_classes": None,
+                "alpha": None,
+                "beta": None,
+            },
             "optimizer_state_dict": None,
             "train_loss_history": [],
             "val_loss_history": [],
@@ -49,9 +53,16 @@ class Trainer:
         ckpt_path: str = None,
     ):
         
-        trainable_params = [param for param in self.parameters() if param.requires_grad]
+        self.init_state()
+        trainable_params = [param for param in model.parameters() if param.requires_grad]
         optimizer = optim.LBFGS(trainable_params, lr=self.learning_rate, max_iter=self.max_ls)
         model = model.to(self.device)
+        self._state["kwargs"]["num_classes"] = model.num_classes
+        self._state["kwargs"]["alpha"] = model.alpha
+        self._state["kwargs"]["beta"] = model.beta
+
+        if self.output_dir is not None:
+            os.makedirs(self.output_dir, exist_ok=True)
 
         if ckpt_path is not None:
             self._state = torch.load(ckpt_path, map_location=self.device)
@@ -59,7 +70,7 @@ class Trainer:
             optimizer.load_state_dict(self._state["optimizer_state_dict"])
 
         def closure():
-            cal_logits = self(train_logits)
+            cal_logits = model(train_logits)
             loss = self.loss(cal_logits, train_labels)
             optimizer.zero_grad()
             loss.backward()
@@ -75,7 +86,7 @@ class Trainer:
 
         model.train()
         try:
-            for epoch in range(self._state["current_epoch"], self.epochs):
+            for epoch in tqdm(range(self._state["current_epoch"], self.epochs), leave=False):
                 loss = optimizer.step(closure)
                 if val_logits is not None:
                     model.eval()
@@ -85,25 +96,20 @@ class Trainer:
                     model.train()
                     if val_loss < self._state["best_val_loss"]:
                         self._state["best_val_loss"] = val_loss
-                        self.save_model_state(model, name="best")
+                        self.save_state(model, name="best")
                 self._state["current_epoch"] += 1
                 self._state["state_dict"] = model.state_dict()
                 self._state["optimizer_state_dict"] = optimizer.state_dict()
-                torch.save(self._state, os.path.join(self.output_dir, f"checkpoint-epoch{epoch}-step{self._state['global_step']}.ckpt"))
-                self.save_model_state(model, name="last")
+                if self.output_dir is not None:
+                    self.save_state(name="last")
+
         except KeyboardInterrupt:
             self._state["state_dict"] = model.state_dict()
             self._state["optimizer_state_dict"] = optimizer.state_dict()
-            torch.save(self._state, os.path.join(self.output_dir, f"checkpoint-epoch{epoch}-step{self._state['global_step']}.ckpt"))
-            self.save_model_state(model, name="last")
+            if self.output_dir is not None:
+                self.save_state(name="last")
 
-    def save_model_state(self, model, name = "best"):
-        checkpoint = {
-            "state_dict": model.state_dict(),
-            "num_classes": model.num_classes,
-            "alpha": model.alpha,
-            "beta": model.beta,
-        }
-        torch.save(checkpoint, os.path.join(self.output_dir, f"{name}.pth"))
+    def save_state(self, name = "best"):
+        torch.save(self._state, os.path.join(self.output_dir, f"{name}.ckpt"))
 
         
